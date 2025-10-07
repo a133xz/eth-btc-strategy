@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import json
 from itertools import product
 
@@ -27,17 +28,213 @@ MY_BUY_THRESHOLD = 0.02
 # =====================
 # Load BTC price data
 # =====================
-with open("eth_last5y.json", "r") as f:
+with open("btc_last5y.json", "r") as f:
     raw_data = json.load(f)
 
-data = pd.DataFrame(raw_data)
-data["date"] = pd.to_datetime(data["date"])
-data = data.sort_values("date").reset_index(drop=True)
+# Keep a full-history DataFrame and a filtered working copy
+data_full = pd.DataFrame(raw_data)
+data_full["date"] = pd.to_datetime(data_full["date"])
+data_full = data_full.sort_values("date").reset_index(drop=True)
 
+data = data_full.copy()
 if START_DATE:
     data = data[data["date"] >= pd.to_datetime(START_DATE)]
 if END_DATE:
     data = data[data["date"] <= pd.to_datetime(END_DATE)]
+
+# =====================
+# Helper indicators & backtester
+# =====================
+def compute_sma(series: pd.Series, window: int) -> pd.Series:
+    return series.rolling(window=window, min_periods=window).mean()
+
+def positions_sma_filter(prices: pd.Series, window: int) -> pd.Series:
+    sma = compute_sma(prices, window)
+    pos = (prices > sma).astype(int)
+    pos = pos.where(sma.notna(), 0)
+    return pos
+
+def positions_ma_crossover(prices: pd.Series, fast: int, slow: int) -> pd.Series:
+    fast_sma = compute_sma(prices, fast)
+    slow_sma = compute_sma(prices, slow)
+    pos = (fast_sma > slow_sma).astype(int)
+    pos = pos.where(slow_sma.notna(), 0)
+    return pos
+
+def positions_momentum(prices: pd.Series, lookback: int) -> pd.Series:
+    mom = prices.pct_change(lookback)
+    pos = (mom > 0).astype(int)
+    pos = pos.where(mom.notna(), 0)
+    return pos
+
+def positions_donchian(prices: pd.Series, window: int) -> pd.Series:
+    rolling_high = prices.rolling(window=window, min_periods=window).max()
+    rolling_low = prices.rolling(window=window, min_periods=window).min()
+    long_signal = prices >= rolling_high
+    flat_signal = prices <= rolling_low
+    pos = pd.Series(0, index=prices.index)
+    in_pos = 0
+    for i in range(len(prices)):
+        if not np.isfinite(rolling_high.iat[i]) or not np.isfinite(rolling_low.iat[i]):
+            pos.iat[i] = 0
+            continue
+        if in_pos == 0 and long_signal.iat[i]:
+            in_pos = 1
+        elif in_pos == 1 and flat_signal.iat[i]:
+            in_pos = 0
+        pos.iat[i] = in_pos
+    return pos
+
+def positions_eth_btc_relative(data_eth: pd.DataFrame, data_btc: pd.DataFrame, window: int) -> pd.Series:
+    df = (
+        data_eth[["date", "price"]]
+        .rename(columns={"price": "eth"})
+        .merge(
+            data_btc[["date", "price"]].rename(columns={"price": "btc"}),
+            on="date",
+            how="inner",
+        )
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+    ratio = df["eth"] / df["btc"]
+    ratio_sma = ratio.rolling(window=window, min_periods=window).mean()
+    pos = (ratio > ratio_sma).astype(int)
+    pos = pos.where(ratio_sma.notna(), 0)
+    pos.index = df.index
+    df_ret = df.copy()
+    df_ret["pos"] = pos
+    # Re-align back to the ETH filtered index by date
+    aligned = (
+        data_eth[["date"]]
+        .merge(df_ret[["date", "pos"]], on="date", how="left")
+        .set_index(data_eth.index)
+    )
+    return aligned["pos"].fillna(0).astype(int)
+
+def backtest_from_positions(df: pd.DataFrame, pos: pd.Series) -> float:
+    usd = INITIAL_USD
+    eth = 0.0
+    last_pos = 0
+    for i in range(len(df)):
+        price = df.iloc[i]["price"]
+        p = int(pos.iloc[i]) if i < len(pos) else 0
+        if last_pos == 0 and p == 1:
+            if usd > 0:
+                eth_bought = (usd * (1 - FEE)) / price
+                eth += eth_bought
+                usd = 0.0
+        elif last_pos == 1 and p == 0:
+            if eth > 0:
+                usd_received = eth * price * (1 - FEE)
+                usd += usd_received
+                eth = 0.0
+        last_pos = p
+    final_value = usd + eth * df.iloc[-1]["price"]
+    return final_value
+
+# =====================
+# Load BTC for relative strategies
+# =====================
+with open("btc_last5y.json", "r") as f:
+    btc_raw = json.load(f)
+btc_full = pd.DataFrame(btc_raw)
+btc_full["date"] = pd.to_datetime(btc_full["date"])
+btc_full = btc_full.sort_values("date").reset_index(drop=True)
+
+def run_and_report_strategies(df: pd.DataFrame, label: str):
+    prices = df["price"].reset_index(drop=True)
+    df_local = df.reset_index(drop=True)
+
+    strategies = {}
+    strategies["SMA200 filter"] = positions_sma_filter(prices, 200)
+    strategies["SMA100 filter"] = positions_sma_filter(prices, 100)
+    strategies["MA cross 50/200"] = positions_ma_crossover(prices, 50, 200)
+    strategies["Momentum 63d"] = positions_momentum(prices, 63)
+    strategies["Donchian 50d"] = positions_donchian(prices, 50)
+    strategies["ETH/BTC RS 90d"] = positions_eth_btc_relative(df_local[["date", "price"]], btc_full, 90)
+
+    results_alt = []
+    initial_price_local = df_local.iloc[0]["price"]
+    final_price_local = df_local.iloc[-1]["price"]
+    hold_value_local = INITIAL_USD * (final_price_local / initial_price_local)
+    hold_pct_local = ((hold_value_local - INITIAL_USD) / INITIAL_USD) * 100
+
+    for name, pos in strategies.items():
+        # Align pos length to df_local
+        pos_aligned = pos
+        if len(pos_aligned) != len(df_local):
+            pos_aligned = pos_aligned.reindex(range(len(df_local))).fillna(0)
+        value = backtest_from_positions(df_local, pos_aligned)
+        pct = ((value - INITIAL_USD) / INITIAL_USD) * 100
+        results_alt.append({
+            "strategy": name,
+            "final_value": value,
+            "percent_change": pct,
+            "vs_hold_pct": pct - hold_pct_local,
+        })
+
+    results_alt_df = pd.DataFrame(results_alt).sort_values("final_value", ascending=False).reset_index(drop=True)
+
+    print(f"\nAlternative Strategies - {label}")
+    print(results_alt_df.head(10))
+
+
+def parameter_sweep(df: pd.DataFrame, label: str):
+    prices = df["price"].reset_index(drop=True)
+    df_local = df.reset_index(drop=True)
+    combos = []
+
+    # Momentum lookbacks
+    for lb in [21, 42, 63, 84, 126, 252]:
+        pos = positions_momentum(prices, lb)
+        value = backtest_from_positions(df_local, pos)
+        pct = ((value - INITIAL_USD) / INITIAL_USD) * 100
+        combos.append((f"Momentum {lb}d", value, pct))
+
+    # SMA filters
+    for w in [50, 100, 150, 200, 250]:
+        pos = positions_sma_filter(prices, w)
+        value = backtest_from_positions(df_local, pos)
+        pct = ((value - INITIAL_USD) / INITIAL_USD) * 100
+        combos.append((f"SMA{w} filter", value, pct))
+
+    # MA crossovers
+    for fast in [10, 20, 50]:
+        for slow in [100, 150, 200]:
+            if fast >= slow:
+                continue
+            pos = positions_ma_crossover(prices, fast, slow)
+            value = backtest_from_positions(df_local, pos)
+            pct = ((value - INITIAL_USD) / INITIAL_USD) * 100
+            combos.append((f"MA cross {fast}/{slow}", value, pct))
+
+    # Donchian
+    for w in [20, 50, 100, 150]:
+        pos = positions_donchian(prices, w)
+        value = backtest_from_positions(df_local, pos)
+        pct = ((value - INITIAL_USD) / INITIAL_USD) * 100
+        combos.append((f"Donchian {w}d", value, pct))
+
+    # ETH/BTC RS
+    for w in [60, 90, 120, 180]:
+        pos = positions_eth_btc_relative(df_local[["date", "price"]], btc_full, w)
+        value = backtest_from_positions(df_local, pos)
+        pct = ((value - INITIAL_USD) / INITIAL_USD) * 100
+        combos.append((f"ETH/BTC RS {w}d", value, pct))
+
+    initial_price_local = df_local.iloc[0]["price"]
+    final_price_local = df_local.iloc[-1]["price"]
+    hold_value_local = INITIAL_USD * (final_price_local / initial_price_local)
+    hold_pct_local = ((hold_value_local - INITIAL_USD) / INITIAL_USD) * 100
+
+    results = [
+        {"strategy": name, "final_value": val, "percent_change": pct, "vs_hold_pct": pct - hold_pct_local}
+        for (name, val, pct) in combos
+    ]
+    df_res = pd.DataFrame(results).sort_values("final_value", ascending=False).reset_index(drop=True)
+    print(f"\nParameter Sweep - {label}")
+    print(df_res.head(15))
 
 # =====================
 # Simulation function
@@ -300,7 +497,7 @@ def simulate_strategy_profit_only(data, sell_thresh, buy_thresh, initial_usd, de
 initial_price = data.iloc[0]["price"]
 final_price = data.iloc[-1]["price"]
 btc_bought_hold = INITIAL_USD / initial_price
-print(f"BTC bought in buy & hold: {initial_price:.8f}")
+print(f"BTC bought in buy & hold: {btc_bought_hold:.8f}")
 hold_final_value = btc_bought_hold * final_price
 hold_percentage = ((hold_final_value - INITIAL_USD) / INITIAL_USD) * 100
 
@@ -323,3 +520,10 @@ print(f"Profit-Only Strategy:    ${final_value:.2f}")
 print(f"{'='*60}")
 print(f"Strategy vs Buy & Hold:  {my_row.iloc[0]['percent_change'] - hold_percentage:+.1f}% better")
 print(f"{'='*60}")
+
+# =====================
+# Alternative Strategies Reports
+# =====================
+run_and_report_strategies(data, label="Filtered Window")
+run_and_report_strategies(data_full, label="Full History")
+parameter_sweep(data_full, label="Full History")

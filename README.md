@@ -1,96 +1,89 @@
-# ETH-BTC Trading Strategy
+## Momentum 63d Strategy (ETH)
 
-This is a **systematic trading strategy** designed to capture Bitcoin price movements using **asymmetric thresholds**:
+This README explains the Momentum 63d strategy added to the backtester and how to use it.
 
-| Action   | Threshold | Purpose                        |
-| -------- | --------- | ------------------------------ |
-| **Sell** | +7%       | Take profits on upward moves   |
-| **Buy**  | -1%       | Re-enter after small pullbacks |
+### What is Momentum 63d?
 
-**How it works:**
+Momentum 63d is a simple trend-following rule:
 
-1. **Buy BTC** with available capital (initial investment or reinvested profits).
-2. **Sell BTC** when the price rises 7% from the entry.
-3. **Reinvest fully** all proceeds for the next purchase.
+- **Go long ETH** when the trailing 63‑day return is positive.
+- **Stay in cash** when the trailing 63‑day return is negative or undefined.
 
-### Example Trade Sequence
+This is a classic absolute momentum (time‑series momentum) filter. 63 trading days ≈ 3 months.
 
-| Day | BTC Price | Action | BTC Holdings | Capital |
-| --- | --------- | ------ | ------------ | ------- |
-| 1   | 10,000    | Buy    | 0.5 BTC      | $5,000  |
-| 5   | 10,700    | Sell   | 0 BTC        | $5,350  |
-| 8   | 10,665    | Buy    | 0.501 BTC    | $5,350  |
-| 12  | 11,372    | Sell   | 0 BTC        | $5,697  |
+### Exact Rule
 
-## Visual Timeline
+- Define the 63‑day return as: \(R_{63}(t) = \frac{P_t}{P_{t-63}} - 1\) where \(P_t\) is today’s close.
+- Position \(\in \{0, 1\}\):
+  - If \(R_{63}(t) > 0\) → position = 1 (fully invested in ETH)
+  - Else → position = 0 (100% cash)
 
-Here's a visual representation of how your strategy might perform with a **$5,000 investment starting June 1, 2025**:
+Rebalances are evaluated daily using end‑of‑day prices. Trades pay the configured fee.
 
-```mermaid
-timeline
-    title ETH-BTC Strategy: $5,000 Investment Journey (June 2025)
-    section Initial Investment
-        June 1 : 💰 Buy 0.5 BTC at $10,000<br/>Investment: $5,000
-    section First Profit Taking
-        June 5 : 💹 Price hits $10,700 (+7%)<br/>Sell 0.5 BTC for $5,350
-    section Reinvestment
-        June 8 : 🔄 Price dips to $10,665 (-1%)<br/>Buy 0.501 BTC with $5,350
-    section Second Profit Taking
-        June 12 : 💹 Price reaches $11,372 (+7%)<br/>Sell 0.501 BTC for $5,697
-    section Third Cycle
-        June 15 : 🔄 Price dips to $11,350 (-1%)<br/>Buy 0.503 BTC with $5,697
-    section Third Profit Taking
-        June 20 : 💹 Price climbs to $12,143 (+7%)<br/>Sell 0.503 BTC for $6,108
-    section Fourth Cycle
-        June 23 : 🔄 Price falls to $12,122 (-1%)<br/>Buy 0.504 BTC with $6,108
-    section Fourth Profit Taking
-        June 28 : 💹 Price surges to $12,971 (+7%)<br/>Sell 0.504 BTC for $6,537
-```
+### Why 63 days?
 
-**Investment Evolution:**
-- **Start**: $5,000 → 0.5 BTC
-- **After 4 weeks**: $6,537 (30.7% growth)
-- **Compounding effect**: Each cycle increases both BTC holdings and USD value
+- 63 trading days ≈ one quarter; a common horizon that balances responsiveness and noise.
+- Empirically robust for many assets; reduces deep drawdowns during sustained downtrends.
 
-### Why It Works
+### Pros and Cons
 
-**Asymmetric Positioning:**
+- Pros
+  - Cuts exposure in downtrends → typically smaller drawdowns vs buy & hold
+  - Very simple and transparent; few parameters to overfit
+  - Low turnover (trades only at regime changes)
+- Cons
+  - Can whipsaw in choppy markets (small losses around the SMA/momentum line)
+  - May underperform buy & hold in strong, uninterrupted bull markets
 
-* **Sell at +7%** → larger profit-taking, accumulates more BTC at lower prices
-* **Buy at -1%** → smaller re-entry, reduces risk exposure
+### How it’s implemented here
 
-**Result:** More BTC is accumulated in uptrends, and losses are minimized in pullbacks, creating compounding growth.
-
-1. **Volatility = Opportunity:** Bitcoin price swings create systematic profit chances.
-2. **Asymmetric Trading:** Larger profit threshold than loss tolerance.
-3. **Compounding:** Full reinvestment drives exponential growth.
-4. **Risk Management:** Thresholds limit drawdowns.
-
-## Performance Benchmark (2020-2025 Backtest)
-
-| Strategy | Final Value | 5-Year Return | Risk Profile |
-|----------|-------------|---------------|--------------|
-| **Buy & Hold** | $11,830 | +136.6% | No active management |
-| **Your Strategy** | $9,955 | +99.1% | Active profit-taking |
-| **Profit-Only** | $5,000 | 0.0% | Capital preservation |
-
-**Key Insights:**
-- Your strategy captured 73% of buy-and-hold returns while actively managing risk
-- The asymmetric 7:1 profit/loss ratio provides downside protection during corrections
-- Profit-only mode preserves initial capital but limits upside due to fee erosion in later cycles
-
-## Configuration
+In the script, the position series is built as:
 
 ```python
-# Trading parameters
-SELL_THRESHOLD = 0.07   # Sell at +7% profit
-BUY_THRESHOLD  = 0.01   # Buy at -1% loss
-FEE            = 0.001  # 0.1% trading fee
+import pandas as pd
 
-# Investment
-INITIAL_USD = 5000      # Starting capital
-
-# Backtest date range
-START_DATE = "2020-09-08"
-END_DATE   = "2025-10-07"
+def positions_momentum(prices: pd.Series, lookback: int) -> pd.Series:
+    mom = prices.pct_change(lookback)
+    pos = (mom > 0).astype(int)
+    pos = pos.where(mom.notna(), 0)
+    return pos
 ```
+
+The backtester interprets `1` as fully long ETH and `0` as fully in cash, applying a 0.1% fee (`FEE = 0.001`) on each buy/sell.
+
+### How to run it
+
+1. Ensure your data files exist: `eth_last5y.json` (ETH daily prices) and optionally `btc_last5y.json`.
+2. Run the script:
+   ```bash
+   python3 eth-strategy.py
+   ```
+3. Look for the section:
+   - "Alternative Strategies - Filtered Window" (your `START_DATE`/`END_DATE`)
+   - "Alternative Strategies - Full History"
+   The row named `Momentum 63d` shows final value, percent return, and out/under‑performance vs buy & hold.
+
+To change the date range, set `START_DATE` and `END_DATE` at the top of `eth-strategy.py`.
+
+### Backtest highlights on your data
+
+- 2025 window (your current `START_DATE`–`END_DATE`): Momentum 63d outperformed buy & hold in our run (approx. +112.2% vs +40.9%).
+- 2020–2025 full history: Momentum 63d produced large gains but still trailed raw buy & hold over the entire bull run. It typically shines in sideways/bear regimes by reducing drawdowns.
+
+Results will change with the evaluation window, fees, and precise data. Use multiple windows for a fair assessment.
+
+### Tuning
+
+- Lookback: try 42d/84d/126d to trade off responsiveness vs stability.
+- Optional enhancements (not required):
+  - Volatility targeting: scale the position to a volatility budget instead of 0/1.
+  - Ensemble: hold ETH if either Momentum 63d OR a long‑term SMA filter is bullish.
+
+### Risk Notes
+
+- Momentum can suffer from whipsaws during choppy periods.
+- There is no guarantee of future outperformance; use as one tool in a diversified process.
+
+### License / Usage
+
+This repository is provided for research and educational purposes only. No financial advice.
