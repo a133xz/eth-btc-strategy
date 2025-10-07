@@ -22,6 +22,36 @@ This is a **systematic trading strategy** designed to capture Bitcoin price move
 | 8   | 10,665    | Buy    | 0.501 BTC    | $5,350  |
 | 12  | 11,372    | Sell   | 0 BTC        | $5,697  |
 
+## Visual Timeline
+
+Here's a visual representation of how your strategy might perform with a **$5,000 investment starting June 1, 2025**:
+
+```mermaid
+timeline
+    title ETH-BTC Strategy: $5,000 Investment Journey (June 2025)
+    section Initial Investment
+        June 1 : 💰 Buy 0.5 BTC at $10,000<br/>Investment: $5,000
+    section First Profit Taking
+        June 5 : 💹 Price hits $10,700 (+7%)<br/>Sell 0.5 BTC for $5,350
+    section Reinvestment
+        June 8 : 🔄 Price dips to $10,665 (-1%)<br/>Buy 0.501 BTC with $5,350
+    section Second Profit Taking
+        June 12 : 💹 Price reaches $11,372 (+7%)<br/>Sell 0.501 BTC for $5,697
+    section Third Cycle
+        June 15 : 🔄 Price dips to $11,350 (-1%)<br/>Buy 0.503 BTC with $5,697
+    section Third Profit Taking
+        June 20 : 💹 Price climbs to $12,143 (+7%)<br/>Sell 0.503 BTC for $6,108
+    section Fourth Cycle
+        June 23 : 🔄 Price falls to $12,122 (-1%)<br/>Buy 0.504 BTC with $6,108
+    section Fourth Profit Taking
+        June 28 : 💹 Price surges to $12,971 (+7%)<br/>Sell 0.504 BTC for $6,537
+```
+
+**Investment Evolution:**
+- **Start**: $5,000 → 0.5 BTC
+- **After 4 weeks**: $6,537 (30.7% growth)
+- **Compounding effect**: Each cycle increases both BTC holdings and USD value
+
 ### Why It Works
 
 **Asymmetric Positioning:**
