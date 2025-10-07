@@ -9,13 +9,15 @@ FEE = 0.001  # 0.1% trading fee
 INITIAL_USD = 5000
 
 PRINT_DETAILED = False  # Set to False to skip printing detailed transactions
+DEBUG_MODE = False  # Set to True to see detailed output
 
 # Strategy thresholds (percentage changes)
 SELL_THRESHOLDS = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10]
 BUY_THRESHOLDS = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10]
 
 # Date range filter
-START_DATE = "2022-08-13"
+# earliest date is 2020-10-08
+START_DATE = "2020-10-08"
 END_DATE = "2025-10-06"
 
 # Your chosen thresholds
@@ -201,10 +203,14 @@ def simulate_strategy_profit_only(data, sell_thresh, buy_thresh, initial_usd, de
     # Profit-only strategy: extract initial investment, reinvest only profits
     initial_capital = initial_usd  # This will be returned, not reinvested
     available_capital = 0         # Profit available for reinvestment
-    btc = 0
-    total_cost_basis = 0         # tracks total amount invested in BTC
+    btc = 0.0
+    total_cost_basis = 0.0       # tracks total amount invested in BTC
     last_buy_price = None        # Track our buy price for threshold calculations
     state = "USD"
+
+    # Minimum thresholds to avoid floating point issues
+    MIN_BTC_HOLDINGS = 1e-8  # Minimum BTC to consider holding
+    MIN_CAPITAL = 1e-6       # Minimum capital to consider for trading
 
     if debug:
         print(f"Starting with initial_capital: ${initial_capital}, available_for_reinvestment: ${available_capital}")
@@ -212,7 +218,7 @@ def simulate_strategy_profit_only(data, sell_thresh, buy_thresh, initial_usd, de
     for i, (_, row) in enumerate(data.iterrows()):
         price = row["price"]
 
-        if state == "USD" and available_capital > 0:  # Only invest if we have any capital
+        if state == "USD" and available_capital > MIN_CAPITAL:
             # Buy with profit capital
             usd_to_invest = available_capital
             btc_bought = (usd_to_invest * (1 - FEE)) / price
@@ -220,11 +226,11 @@ def simulate_strategy_profit_only(data, sell_thresh, buy_thresh, initial_usd, de
             total_cost_basis += usd_to_invest
             last_buy_price = price
             if debug:
-                print(f"Day {i}: BOUGHT with profit ${usd_to_invest:.2f} -> {btc_bought:.6f} BTC at ${price:.2f}")
+                print(f"Day {i}: BOUGHT with profit ${usd_to_invest:.2f} -> {btc_bought:.8f} BTC at ${price:.2f}")
             available_capital = 0
             state = "BTC"
 
-        elif state == "USD" and btc == 0 and initial_capital > 0:
+        elif state == "USD" and btc < MIN_BTC_HOLDINGS and initial_capital > MIN_CAPITAL:
             # First trade: use initial capital
             usd_to_invest = initial_capital
             btc_bought = (usd_to_invest * (1 - FEE)) / price
@@ -232,22 +238,22 @@ def simulate_strategy_profit_only(data, sell_thresh, buy_thresh, initial_usd, de
             total_cost_basis += usd_to_invest
             last_buy_price = price
             if debug:
-                print(f"Day {i}: FIRST BUY with initial ${usd_to_invest:.2f} -> {btc_bought:.6f} BTC at ${price:.2f}")
+                print(f"Day {i}: FIRST BUY with initial ${usd_to_invest:.2f} -> {btc_bought:.8f} BTC at ${price:.2f}")
             initial_capital = 0  # Initial capital is now invested
             state = "BTC"
 
-        elif state == "BTC" and btc > 0:
+        elif state == "BTC" and btc > MIN_BTC_HOLDINGS:
             if price >= last_buy_price * (1 + sell_thresh):
                 usd_received = btc * price * (1 - FEE)
                 current_value = btc * price
 
                 if debug:
-                    print(f"Day {i}: SELL signal - BTC: {btc:.6f}, Price: ${price:.2f}, Buy price: ${last_buy_price:.2f}")
+                    print(f"Day {i}: SELL signal - BTC: {btc:.8f}, Price: ${price:.2f}, Buy price: ${last_buy_price:.2f}")
 
                 if usd_received > total_cost_basis:
                     # Profit! Return initial investment equivalent, reinvest profit
-                    initial_return = total_cost_basis
-                    profit_amount = usd_received - total_cost_basis
+                    initial_return = min(total_cost_basis, usd_received)  # Don't return more than received
+                    profit_amount = usd_received - initial_return
                     available_capital += profit_amount
                     if debug:
                         print(f"  -> Returned initial: ${initial_return:.2f}, Profit for reinvestment: ${profit_amount:.6f}")
@@ -258,34 +264,47 @@ def simulate_strategy_profit_only(data, sell_thresh, buy_thresh, initial_usd, de
                     if debug:
                         print(f"  -> Loss - recovered ${usd_received:.2f} for reinvestment")
 
-                btc = 0
-                total_cost_basis = 0
+                btc = 0.0
+                total_cost_basis = 0.0
                 last_buy_price = None
                 state = "USD"
 
-            elif price <= last_buy_price * (1 - buy_thresh) and available_capital > 0:
+            elif price <= last_buy_price * (1 - buy_thresh) and available_capital > MIN_CAPITAL:
                 usd_to_invest = available_capital
                 btc_bought = (usd_to_invest * (1 - FEE)) / price
                 btc += btc_bought
                 total_cost_basis += usd_to_invest
                 last_buy_price = (last_buy_price + price) / 2  # Simple average for now
                 if debug:
-                    print(f"Day {i}: REBUY with profit ${usd_to_invest:.2f} -> {btc_bought:.6f} BTC at ${price:.2f}")
+                    print(f"Day {i}: REBUY with profit ${usd_to_invest:.2f} -> {btc_bought:.8f} BTC at ${price:.2f}")
                 available_capital = 0
                 state = "BTC"
 
     # Final value shows ONLY profits made (initial capital is preserved separately)
-    final_btc_value = btc * data.iloc[-1]["price"] if btc > 0 else 0
+    final_btc_value = btc * data.iloc[-1]["price"] if btc > MIN_BTC_HOLDINGS else 0
     total_profit = available_capital + final_btc_value
+
+    # Calculate total return including initial capital recovery
+    final_total_value = initial_usd + total_profit
 
     if debug:
         print(f"Final: profit_capital=${available_capital:.6f}, btc_value=${final_btc_value:.6f}")
         print(f"Total profit made: ${total_profit:.6f} (initial ${initial_usd:.0f} preserved separately)")
+        print(f"Final total value (initial + profit): ${final_total_value:.2f}")
+        profit_percentage = (total_profit / initial_usd) * 100
+        print(f"Profit percentage: {profit_percentage:.2f}%")
 
     return total_profit
 
+# Calculate buy-and-hold benchmark
+initial_price = data.iloc[0]["price"]
+final_price = data.iloc[-1]["price"]
+btc_bought_hold = INITIAL_USD / initial_price
+print(f"BTC bought in buy & hold: {initial_price:.8f}")
+hold_final_value = btc_bought_hold * final_price
+hold_percentage = ((hold_final_value - INITIAL_USD) / INITIAL_USD) * 100
+
 # Run the profit-only strategy (set debug=True to see detailed output)
-DEBUG_MODE = False  # Set to False for clean output
 INITIAL_INVEST = INITIAL_USD
 final_value = simulate_strategy_profit_only(data, MY_SELL_THRESHOLD, MY_BUY_THRESHOLD, INITIAL_INVEST, debug=DEBUG_MODE)
 
@@ -293,3 +312,14 @@ if DEBUG_MODE:
     print(f"\nPure profit made (initial ${INITIAL_INVEST:.0f} preserved): ${final_value:.2f}")
 else:
     print(f"\nProfit-only strategy result: ${final_value:.2f}")
+
+# Display comparison
+print(f"\n{'='*60}")
+print(f"BENCHMARK COMPARISON (Initial Investment: ${INITIAL_USD:,.0f})")
+print(f"{'='*60}")
+print(f"Buy & Hold Strategy:     ${hold_final_value:,.2f} ({hold_percentage:+.1f}%)")
+print(f"Your Strategy:           ${my_row.iloc[0]['final_value']:,.2f} ({my_row.iloc[0]['percent_change']:+.1f}%)")
+print(f"Profit-Only Strategy:    ${final_value:.2f}")
+print(f"{'='*60}")
+print(f"Strategy vs Buy & Hold:  {my_row.iloc[0]['percent_change'] - hold_percentage:+.1f}% better")
+print(f"{'='*60}")
