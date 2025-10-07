@@ -6,7 +6,7 @@ from itertools import product
 # CONFIGURATION
 # =====================
 FEE = 0.001  # 0.1% trading fee
-INITIAL_USD = 500
+INITIAL_USD = 5000
 
 PRINT_DETAILED = False  # Set to False to skip printing detailed transactions
 
@@ -15,17 +15,17 @@ SELL_THRESHOLDS = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10]
 BUY_THRESHOLDS = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10]
 
 # Date range filter
-START_DATE = "2020-09-08"
-END_DATE = "2025-10-07"
+START_DATE = "2022-08-13"
+END_DATE = "2025-10-06"
 
 # Your chosen thresholds
-MY_SELL_THRESHOLD = 0.07
-MY_BUY_THRESHOLD = 0.01
+MY_SELL_THRESHOLD = 0.04
+MY_BUY_THRESHOLD = 0.02
 
 # =====================
 # Load BTC price data
 # =====================
-with open("btc_last5y.json", "r") as f:
+with open("eth_last5y.json", "r") as f:
     raw_data = json.load(f)
 
 data = pd.DataFrame(raw_data)
